@@ -1,26 +1,21 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Drawing;
-using System.Data;
+﻿using RGBuild.NAND;
+using System;
 using System.IO;
-using System.Linq;
-using System.Text;
 using System.Windows.Forms;
-using RGBuild.NAND;
 
 namespace RGBuild
 {
     public partial class FileSystemControl : UserControl
     {
         private FileSystemRoot FileSystem;
+        private readonly ListViewColumnSorter sorter = new ListViewColumnSorter();
 
-        public FileSystemControl(FileSystemRoot filesystem)
-        {
+        public FileSystemControl(FileSystemRoot filesystem) {
             FileSystem = filesystem;
             InitializeComponent();
             if (FileSystem == FileSystem.Image.CurrentFileSystem)
                 lblNotCurrent.Visible = false;
+            lvFiles.ListViewItemSorter = sorter;
             refreshFiles();
         }
 
@@ -29,9 +24,11 @@ namespace RGBuild
             foreach (FileSystemEntry ent in FileSystem.Entries)
             {
                 ListViewItem item = new ListViewItem(ent.FileName);
-                //item.SubItems.Add("0x" + ent.BlockNumber.ToString("X"));
+                item.SubItems.Add("0x" + ent.BlockNumber.ToString("X"));
+                item.SubItems.Add("0x" + (Main.isOffsetWithSpare() ? ((ent.Position / 0x200) * 0x210) : ent.Position).ToString("X"));
                 item.SubItems.Add("0x" + ent.Size.ToString("X"));
                 item.SubItems.Add("0x" + ent.Timestamp.ToString("X"));
+                item.SubItems.Add(ent.Deleted ? "Yes" : "");
                 item.Tag = ent;
                 lvFiles.Items.Add(item);
             }
@@ -104,6 +101,25 @@ namespace RGBuild
         {
             replaceToolStripMenuItem.Enabled = lvFiles.SelectedItems.Count == 1;
             extractToolStripMenuItem.Enabled = lvFiles.SelectedItems.Count > 0;
+        }
+
+        private void lvFiles_Click(object sender, ColumnClickEventArgs e) {
+            // Determine if clicked column is already the column that is being sorted.
+            if (e.Column == sorter.SortColumn) {
+                // Reverse the current sort direction for this column.
+                if (sorter.Order == SortOrder.Ascending) {
+                    sorter.Order = SortOrder.Descending;
+                } else {
+                    sorter.Order = SortOrder.Ascending;
+                }
+            } else {
+                // Set the column number that is to be sorted; default to ascending.
+                sorter.SortColumn = e.Column;
+                sorter.Order = SortOrder.Ascending;
+            }
+
+            // Perform the sort with these new sort options.
+            this.lvFiles.Sort();
         }
     }
 }

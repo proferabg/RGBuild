@@ -19,7 +19,7 @@ namespace RGBuild
     {
        
 
-        public const string Version = "4.1";
+        public const string Version = "4.1 (HaXzz's Patch)";
         public const string RGversion = "0v800";
 
         private static readonly string[] CmdLineOptions = new[] { 
@@ -44,12 +44,14 @@ namespace RGBuild
         public static string LoadFromIniError = "";
 
         public static StringCollection StoredKeys = new StringCollection();
+
+        private static string keysFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RGBuild\\keys.txt");
         public static bool LoadStoredKeys()
         {
             try
             {
                 StoredKeys = new StringCollection();
-                string key = RegistryHelper.ReadKey("StoredKeys");
+                string key = File.ReadAllText(keysFilePath);
                 if (String.IsNullOrEmpty(key))
                     return false;
                 string[] keys = key.Split(new[] { "\r\n" }, StringSplitOptions.None);
@@ -65,8 +67,13 @@ namespace RGBuild
         }
         public static bool SaveStoredKeys()
         {
+
             string keydata = StoredKeys.Cast<string>().Aggregate("", (current, str) => current + (str + "\r\n"));
-            return RegistryHelper.WriteKey("StoredKeys", keydata);
+            string parent = Path.GetDirectoryName(keysFilePath);
+            if(!Directory.Exists(parent))
+                Directory.CreateDirectory(parent);
+            File.WriteAllText(keysFilePath, keydata);
+            return true;
         }
         public static string LoadFromIni(ref NANDImage image, string inipath)
         {

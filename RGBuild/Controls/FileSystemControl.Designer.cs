@@ -33,12 +33,15 @@
             this.lblNotCurrent = new System.Windows.Forms.Label();
             this.lvFiles = new System.Windows.Forms.ListView();
             this.chName = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
+            this.chOffset = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
             this.chSize = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
             this.chTimestamp = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
+            this.chDeleted = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
             this.contextMenuStrip1 = new System.Windows.Forms.ContextMenuStrip(this.components);
             this.extractToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.replaceToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.injectToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.chBlock = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
             this.gbPerBoxData.SuspendLayout();
             this.contextMenuStrip1.SuspendLayout();
             this.SuspendLayout();
@@ -68,17 +71,22 @@
             // 
             this.lvFiles.Columns.AddRange(new System.Windows.Forms.ColumnHeader[] {
             this.chName,
+            this.chBlock,
+            this.chOffset,
             this.chSize,
-            this.chTimestamp});
+            this.chTimestamp,
+            this.chDeleted});
             this.lvFiles.ContextMenuStrip = this.contextMenuStrip1;
             this.lvFiles.Dock = System.Windows.Forms.DockStyle.Fill;
             this.lvFiles.FullRowSelect = true;
+            this.lvFiles.HideSelection = false;
             this.lvFiles.Location = new System.Drawing.Point(3, 16);
             this.lvFiles.Name = "lvFiles";
             this.lvFiles.Size = new System.Drawing.Size(492, 348);
             this.lvFiles.TabIndex = 0;
             this.lvFiles.UseCompatibleStateImageBehavior = false;
             this.lvFiles.View = System.Windows.Forms.View.Details;
+            this.lvFiles.ColumnClick += new System.Windows.Forms.ColumnClickEventHandler(this.lvFiles_Click);
             this.lvFiles.SelectedIndexChanged += new System.EventHandler(this.lvFiles_SelectedIndexChanged);
             // 
             // chName
@@ -86,15 +94,25 @@
             this.chName.Text = "Name";
             this.chName.Width = 137;
             // 
+            // chOffset
+            // 
+            this.chOffset.Text = "Offset";
+            this.chOffset.Width = 80;
+            // 
             // chSize
             // 
             this.chSize.Text = "Size";
-            this.chSize.Width = 77;
+            this.chSize.Width = 68;
             // 
             // chTimestamp
             // 
             this.chTimestamp.Text = "Timestamp";
-            this.chTimestamp.Width = 110;
+            this.chTimestamp.Width = 77;
+            // 
+            // chDeleted
+            // 
+            this.chDeleted.Text = "Deleted";
+            this.chDeleted.Width = 55;
             // 
             // contextMenuStrip1
             // 
@@ -126,6 +144,11 @@
             this.injectToolStripMenuItem.Text = "Inject";
             this.injectToolStripMenuItem.Click += new System.EventHandler(this.injectToolStripMenuItem_Click);
             // 
+            // chBlock
+            // 
+            this.chBlock.Text = "Block";
+            this.chBlock.Width = 64;
+            // 
             // FileSystemControl
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
@@ -152,6 +175,8 @@
         private System.Windows.Forms.ToolStripMenuItem extractToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem replaceToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem injectToolStripMenuItem;
-
+        private System.Windows.Forms.ColumnHeader chOffset;
+        private System.Windows.Forms.ColumnHeader chDeleted;
+        private System.Windows.Forms.ColumnHeader chBlock;
     }
 }

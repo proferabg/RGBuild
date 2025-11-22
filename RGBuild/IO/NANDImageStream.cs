@@ -441,6 +441,13 @@ namespace RGBuild.IO
                 return (int)count;
             }
         }
+
+        public bool IsBigBlock {
+            get {
+                return SpareDataType == SpareDataType.BigBlock || SpareDataType == SpareDataType.BigOnSmall;
+            }
+        }
+
         public int BadBlockAreaStart
         {
             get
@@ -463,7 +470,7 @@ namespace RGBuild.IO
                                 return 0x1DC; //might need to be this?
 
                             case 0x800000:
-                                return 0xf0;
+                                return 0xF0;
                             default:
                                 return 0x3E0;
                         }
@@ -474,6 +481,9 @@ namespace RGBuild.IO
         {
             get
             {
+                if(SpareDataType == SpareDataType.None && BlockLength == 0x4000) {
+                    return 0xBFC;
+                }
                 return BadBlockAreaStart - 4;
             }
         }
@@ -627,7 +637,11 @@ namespace RGBuild.IO
         }
         public void SeekToBlock(int blockNumber)
         {
-            SeekToPage(blockNumber * PagesPerBlock);
+            if (IsBigBlock) {
+                SeekToPage(blockNumber * PagesPerBigBlock);
+            } else {
+                SeekToPage(blockNumber * PagesPerBlock);
+            }
         }
         public void SeekToBigBlock(int blockNumber)
         {
@@ -637,7 +651,7 @@ namespace RGBuild.IO
         {
             get
             {
-                return PagesPerBlock * PageLength;
+                return (IsBigBlock ? PagesPerBigBlock : PagesPerBlock) * PageLength;
             }
         }
         public long BigBlockLength
@@ -771,7 +785,7 @@ namespace RGBuild.IO
                         byte[] ecc = new byte[SpareLength];
                         _dataStream.Read(data, 0, PageLength);
                         _eccStream.Read(ecc, 0, SpareLength);
-                        // if (SpareDataType == SpareDataType.None)
+                        if (SpareDataType == SpareDataType.None)
                         {
 
                             short block = (short)i;

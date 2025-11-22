@@ -1,8 +1,9 @@
-﻿using System;
+﻿using RGBuild.IO;
+using System;
 using System.Collections.Generic;
+using System.Drawing.Printing;
 using System.IO;
 using System.Linq;
-using RGBuild.IO;
 
 namespace RGBuild.NAND
 {
@@ -28,6 +29,7 @@ namespace RGBuild.NAND
         internal int PageNumber;
         public string FileName;
         public ushort BlockNumber;
+        public long Position;
         public uint Size;
         public int Timestamp; // DOS date, not very important
         public bool Deleted;
@@ -50,9 +52,9 @@ namespace RGBuild.NAND
             PageNumber = page;
             FSRoot = root;
         }
-        public void Read()
+        public void Read(int page)
         {
-            Read(FSRoot.Image.IO);
+            Read(FSRoot.Image.IO, page);
         }
         public void Write()
         {
@@ -79,25 +81,38 @@ namespace RGBuild.NAND
             _data = data;
             Size = (uint)data.Length;
         }
-        public void Read(X360IO io)
-        {
-            long pos = io.Stream.Position;
-            //try
-            //{
-                FileName = io.Reader.ReadAsciiString(0x16).Trim('\0');
-            //}
-            //catch
-            //{
-            //    FileName = "ERROR";
-            //    io.Stream.Position = pos + 0x16;
-            //}
-
+        public void Read(X360IO io, int page) {
+            FileName = io.Reader.ReadAsciiString(0x16).Trim('\0');
             if(FileName.Length > 0 && FileName[0] == 0x05)
             {
                 FileName = "_" + FileName.Substring(1, FileName.Length - 1);
                 Deleted = true;
             }
             BlockNumber = io.Reader.ReadUInt16();
+            Position = BlockNumber * ((NANDImageStream)io.Stream).BlockLength;
+
+            NANDImageStream nandImageStream = ((NANDImageStream)io.Stream);
+            if (nandImageStream.IsBigBlock) {
+                long pos = io.Stream.Position;
+                ISpareData ecc = nandImageStream.GetPageSpare(page);
+                io.Stream.Position = pos;
+
+                int smallblocksInBigBlocks = 8;
+                int blocksInNand = 0x200;
+                int remapReserveSize = 0x20;
+                int sizeOfFlashFileSystem = ecc.FsSize & 0xFF;
+                int blocksReservedConfigInfo = ecc.FsPageCount;
+
+
+                int totalSize = blocksInNand * (smallblocksInBigBlocks);
+                int endOfConfigArea = totalSize - (remapReserveSize * smallblocksInBigBlocks);
+                int endOfFileSystem = endOfConfigArea - (blocksReservedConfigInfo * smallblocksInBigBlocks);
+                int startOfFileSystem = endOfFileSystem - (sizeOfFlashFileSystem << 5);
+
+                BlockNumber = (ushort)((startOfFileSystem + BlockNumber) / smallblocksInBigBlocks);
+                Position = (BlockNumber * nandImageStream.PageCount);
+            }
+
             Size = io.Reader.ReadUInt32();
             Timestamp = io.Reader.ReadInt32();
         }
@@ -386,7 +401,7 @@ namespace RGBuild.NAND
 
         public ushort[] GetBlockChain(ushort startBlock, int limit)
         {
-            if (startBlock > ((NANDImageStream)Image.IO.Stream).BlockCount)
+            if (startBlock > (((NANDImageStream)Image.IO.Stream).IsBigBlock ? ((NANDImageStream)Image.IO.Stream).BigBlockCount : ((NANDImageStream)Image.IO.Stream).BlockCount))
                 return null;
             ushort[] blockList = new ushort[0];
             ushort currentBlock = startBlock;
@@ -477,12 +492,12 @@ namespace RGBuild.NAND
         public void Read()
         {
             Entries = new List<FileSystemEntry>();
-            ((NANDImageStream) Image.IO.Stream).SeekToBlock(BlockNumber);
+            ((NANDImageStream)Image.IO.Stream).SeekToBlock(BlockNumber);
             int startpage = ((NANDImageStream) Image.IO.Stream).CurrentPageNumber;
             List<int> blockMapPages = new List<int>();
             List<int> fileNamePages = new List<int>();
             for (int i = 0; i < ((NANDImageStream)Image.IO.Stream).PagesPerBlock; i++)
-                if (i%2 == 0)
+                if (i % 2 == 0)
                     blockMapPages.Add(startpage + i);
                 else
                     fileNamePages.Add(startpage + i);
@@ -496,7 +511,7 @@ namespace RGBuild.NAND
                 for (int i = 0; i < entrycount; i++)
                 {
                     FileSystemEntry entry = new FileSystemEntry(page, this);
-                    entry.Read();
+                    entry.Read(page);
 
                     if (String.IsNullOrEmpty(entry.FileName))
                     {
@@ -507,7 +522,7 @@ namespace RGBuild.NAND
                         Entries.Add(entry);
                 }
             }
-            BlockMap = new ushort[((NANDImageStream)Image.IO.Stream).BlockCount];
+            BlockMap = new ushort[((NANDImageStream)Image.IO.Stream).IsBigBlock ? ((NANDImageStream)Image.IO.Stream).BigBlockCount : ((NANDImageStream)Image.IO.Stream).BlockCount];
             int j = 0;
             foreach (int page in blockMapPages)
             {

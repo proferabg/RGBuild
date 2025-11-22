@@ -119,7 +119,7 @@ namespace RGBuild
         {
             if (cmb1BLType.SelectedIndex == 0)
             {
-                txt1BLKey.Text = "DD88AD0C9ED669E7B56794FB68563EFA"; // retail
+                txt1BLKey.Text = Shared.BytesToHexString(Main.bl1Key, ""); // retail
             }
             else
             {

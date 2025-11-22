@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using RGBuild.IO;
 using RGBuild.ThirdParty;
@@ -112,11 +113,15 @@ namespace RGBuild.NAND
             {
                 // get this from the image
                 if (GetType() == typeof(Bootloader1BL))
-                    return BootloaderSecurityType.Unknown;
+                    return ((Bootloader1BL)this).Verify1BL();
                 Bootloader last = Image.GetLastExecutableBootloader(this);
 
-                if (last == null || (GetType() == typeof(Bootloader2BL) && last.GetType() == typeof(Bootloader1BL)))
+                if (last == null || (GetType() == typeof(Bootloader2BL) && last.GetType() == typeof(Bootloader1BL) && Image.Bootloaders[0].GetType() != typeof(Bootloader1BL)))
                     return BootloaderSecurityType.Unknown;
+
+                if (last.GetType() == typeof(Bootloader5BL) && last.PreviousLoader != null && last.PreviousLoader.GetType() == typeof(Bootloader4BL))
+                    return last.PreviousLoader.VerifyLoader(this);
+
                 return last.VerifyLoader(this);
             }
         }
@@ -187,6 +192,42 @@ namespace RGBuild.NAND
         {
             return BootloaderSecurityType.Unknown;
         }
+
+
+
+        public virtual BootloaderSecurityType VerifySignature(byte[] sig, byte[] hash, byte[] salt, byte[] rsaPublicKey)
+        {
+            IntPtr ptrSig = Marshal.AllocHGlobal(sig.Length);
+            Marshal.Copy(sig, 0, ptrSig, sig.Length);
+
+            IntPtr ptrHash = Marshal.AllocHGlobal(hash.Length);
+            Marshal.Copy(hash, 0, ptrHash, hash.Length);
+
+            IntPtr ptrSalt = Marshal.AllocHGlobal(salt.Length);
+            Marshal.Copy(salt, 0, ptrSalt, salt.Length);
+
+            IntPtr ptrRsa = Marshal.AllocHGlobal(rsaPublicKey.Length);
+            Marshal.Copy(rsaPublicKey, 0, ptrRsa, rsaPublicKey.Length);
+
+            try
+            {
+                return XeCrypt.XeCryptBnQwBeSigVerify(ptrSig, ptrHash, ptrSalt, ptrRsa) ? BootloaderSecurityType.SecureStock : BootloaderSecurityType.Insecure;
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine(e);
+            } 
+            finally
+            {
+                Marshal.FreeHGlobal(ptrSig);
+                Marshal.FreeHGlobal(ptrHash);
+                Marshal.FreeHGlobal(ptrSalt);
+                Marshal.FreeHGlobal(ptrRsa);
+            }
+
+            return BootloaderSecurityType.Unknown;
+        }
+
         public virtual void Write()
         {
             Write(Image.IO);
@@ -629,10 +670,12 @@ namespace RGBuild.NAND
         Unknown = 0,
         Insecure = 1,
         SecureStock = 2,
-        SecureGlitch = 4
+        SecureGlitch = 4,
         // time and a place
-        // SecureJTAG = 8 
+        // SecureJTAG = 8,
+        _1BL_MISSING = 16
     }
+
     public class Bootloader1BL : Bootloader
     {
         public byte CopyrightSign; // 0xAC
@@ -648,6 +691,9 @@ namespace RGBuild.NAND
         public ulong UnkAddress4; // MO+0x140
         public byte[] Nonce2BL; // AKA 1BL Key
         public byte[] Salt2BL;
+        public byte[] DigestPhat = new byte[] { 0xD4, 0x0A, 0x08, 0xB0, 0x25, 0x5D, 0x9A, 0xD7, 0x7A, 0xA0, 0x97, 0x0D, 0x88, 0xA8, 0x6B, 0x99, 0xC4, 0xE3, 0xD9, 0x21 };
+        public byte[] DigestSlim = new byte[] { 0x02, 0x57, 0x50, 0x28, 0x1C, 0x85, 0xE8, 0xAD, 0xC7, 0x35, 0xA4, 0x08, 0x0C, 0x88, 0x14, 0xA2, 0x92, 0xB2, 0x0E, 0xB4 };
+
 
         public Bootloader1BL(NANDImage image) : base(image)
         {
@@ -706,22 +752,14 @@ namespace RGBuild.NAND
             Array.Copy(bldata, bootloader.SecuredDataStart, dgdata, 0, dgdata.Length);
             byte[] hash = RotSumSha.XeCryptRotSumSha(headerdata, 0x10, dgdata, dgdata.Length);
 
-            if (bootloader.GetType() == typeof(Bootloader2BL))
-            {
-                // verify next loaders signature
-                byte[] sig = new byte[0x100];
-                Array.Copy(((Bootloader2BL) bootloader).Signature, sig, 0x100);
+            return VerifySignature(((Bootloader2BL)bootloader).Signature, hash, Salt2BL, RsaPublicKey);
+        }
 
-                RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
-                rsa.ImportParameters(Misc.GenerateRSAParametersFromPublicKey(RsaPublicKey));
-               // rsa.
-                RSAPKCS1SignatureDeformatter sigDeformatter = new RSAPKCS1SignatureDeformatter(rsa);
-                sigDeformatter.SetHashAlgorithm("SHA");
-                Array.Reverse(sig);
-                return sigDeformatter.VerifySignature(hash, sig) ? BootloaderSecurityType.SecureStock : BootloaderSecurityType.Unknown;
-            }
-
-            return VerifyLoader(bootloader);
+        internal BootloaderSecurityType Verify1BL()
+        {
+            SHA1Managed sha1 = new SHA1Managed();
+            byte[] digest = sha1.ComputeHash(GetData());
+            return digest.SequenceEqual(DigestSlim) || digest.SequenceEqual(DigestPhat) ? BootloaderSecurityType.SecureStock : BootloaderSecurityType.Insecure;
         }
     }
     public class Bootloader2BL : Bootloader
@@ -767,7 +805,7 @@ namespace RGBuild.NAND
                 Array.Resize(ref HmacShaNonce, 0x20);
                 Array.Copy(CPUKey, 0, HmacShaNonce, 0x10, 0x10);
             }
-            if (PreviousLoader !=null && PreviousLoader.GetType() == typeof(Bootloader2BL))
+            if (PreviousLoader != null && PreviousLoader.GetType() == typeof(Bootloader2BL))
             {
                 if ((PreviousLoader.Flags & (ushort)Lists.XBOX_BLDR_FLAG.NewEnc) != 0)
                 {
@@ -785,23 +823,36 @@ namespace RGBuild.NAND
             }
             else
                 DecryptedData = payload;
-            
+
             X360IO io2 = new X360IO(DecryptedData, true);
             PerBoxData = new Bootloader2BLPerBoxData(this);
-            PerBoxData.Read(io2);
-            Signature = io2.Reader.ReadBytes(0x100);
-            AesInvData = io2.Reader.ReadBytes(0x110);
-            POSTOutputAddress = io2.Reader.ReadUInt64();
-            SbFlashAddress = io2.Reader.ReadUInt64();
-            SocMmioAddress = io2.Reader.ReadUInt64();
-            RsaPublicKey = io2.Reader.ReadBytes(0x110);
-            Nonce3BL = io2.Reader.ReadBytes(0x10);
-            Salt3BL = io2.Reader.ReadBytes(0xA);
-            Salt4BL = io2.Reader.ReadBytes(0xA);
-            Digest4BL = io2.Reader.ReadBytes(0x14);
+
+            if (Magic == NANDBootloaderMagic._S2)
+            {
+                Salt4BL = io2.Reader.ReadBytes(0x20);
+                Signature = io2.Reader.ReadBytes(0x100);
+                Digest4BL = io2.Reader.ReadBytes(0x14);
+                AesInvData = io2.Reader.ReadBytes(0x110);
+            }
+            else
+            {
+                PerBoxData.Read(io2);
+                Signature = io2.Reader.ReadBytes(0x100);
+                AesInvData = io2.Reader.ReadBytes(0x110);
+                POSTOutputAddress = io2.Reader.ReadUInt64();
+                SbFlashAddress = io2.Reader.ReadUInt64();
+                SocMmioAddress = io2.Reader.ReadUInt64();
+                RsaPublicKey = io2.Reader.ReadBytes(0x110);
+                Nonce3BL = io2.Reader.ReadBytes(0x10);
+                Salt3BL = io2.Reader.ReadBytes(0xA);
+                Salt4BL = io2.Reader.ReadBytes(0xA);
+                Digest4BL = io2.Reader.ReadBytes(0x14);
+            }
+
             ConsoleTypeSeqAllowData = new Bootloader2BLConsoleTypeSeqAllow();
             ConsoleTypeSeqAllowData.Read(io2);
             io2.Close();
+
         }
         public override byte[] GetData(bool writeDecrypted)
         {
@@ -833,21 +884,33 @@ namespace RGBuild.NAND
             Write(io);
             Array.Resize(ref HmacShaNonce, 0x10);
             io.Writer.Write(HmacShaNonce);
+
             X360IO io2 = new X360IO(DecryptedData, true);
-            PerBoxData.Write(io2);
-            io2.Writer.Write(Signature);
-            io2.Writer.Write(AesInvData);
-            io2.Writer.Write(POSTOutputAddress);
-            io2.Writer.Write(SbFlashAddress);
-            io2.Writer.Write(SocMmioAddress);
-            io2.Writer.Write(RsaPublicKey);
-            io2.Writer.Write(Nonce3BL);
-            io2.Writer.Write(Salt3BL);
-            io2.Writer.Write(Salt4BL);
-            io2.Writer.Write(Digest4BL);
+            if (Magic == NANDBootloaderMagic._S2)
+            {
+                io2.Writer.Write(Salt4BL);
+                io2.Writer.Write(Signature);
+                io2.Writer.Write(Digest4BL);
+                io2.Writer.Write(AesInvData);
+            }
+            else
+            {
+                PerBoxData.Write(io2);
+                io2.Writer.Write(Signature);
+                io2.Writer.Write(AesInvData);
+                io2.Writer.Write(POSTOutputAddress);
+                io2.Writer.Write(SbFlashAddress);
+                io2.Writer.Write(SocMmioAddress);
+                io2.Writer.Write(RsaPublicKey);
+                io2.Writer.Write(Nonce3BL);
+                io2.Writer.Write(Salt3BL);
+                io2.Writer.Write(Salt4BL);
+                io2.Writer.Write(Digest4BL);
+            }
             ConsoleTypeSeqAllowData.Write(io2);
-            DecryptedData = ((MemoryStream) io2.Stream).ToArray();
+            DecryptedData = ((MemoryStream)io2.Stream).ToArray();
             io2.Close();
+
             if (!writeDecrypted)
             {
                 if (CPUKey != null)
@@ -874,9 +937,25 @@ namespace RGBuild.NAND
         }
         public override BootloaderSecurityType VerifyLoader(Bootloader bootloader)
         {
+            byte[] bldata = bootloader.GetData();
+            byte[] headerdata = new byte[0x10];
+            Array.Copy(bldata, headerdata, 0x10);
+
+            int secStart = (bootloader.Magic == NANDBootloaderMagic._S3 ? 0x20 : bootloader.SecuredDataStart);
+            byte[] dgdata = new byte[bldata.Length - secStart];
+            Array.Copy(bldata, secStart, dgdata, 0, dgdata.Length);
+
+
+            if (bootloader.Magic == NANDBootloaderMagic._S3)
+            {
+                SHA1 sha = new SHA1Managed();
+                sha.TransformBlock(headerdata, 0, 0x10, null, 0);
+                sha.TransformFinalBlock(dgdata, 0, dgdata.Length);
+                return Digest4BL.SequenceEqual(sha.Hash) ? BootloaderSecurityType.SecureStock : BootloaderSecurityType.Insecure;
+            }
+
             byte shapost = 0;
             byte sigpost = 0;
-            byte[] bldata = bootloader.GetData();
             if (bootloader.GetType() == typeof(Bootloader2BL))
             {
                 shapost = 0xDA;
@@ -887,17 +966,31 @@ namespace RGBuild.NAND
             }
             else if (bootloader.GetType() == typeof(Bootloader4BL))
             {
-                shapost = 0x39;
-                sigpost = 0x38;
+                if(bootloader.Build  <= 1746) // beta dev bootloaders
+                {
+                    shapost = 0x36;
+                    sigpost = 0x37;
+                } 
+                else if (Magic.ToString().Contains("S")) // previous bootloader is dev bootloader
+                {
+                    shapost = 0x37;
+                    sigpost = 0x38;
+                }
+                else // previous bootloader is retail bootloader
+                {
+                    shapost = 0x38;
+                    sigpost = 0x39;
+                }
             }
             bool sigcheck = sigpost != 0 && shapost == 0;
+            // verify actual sig post
             if (sigpost != 0 && shapost != 0)
             {
-                // scan the bastard
+                byte[] previousLoader = GetData();
                 byte[] data = new byte[] { 0x38, 0x80, 0x00, sigpost };
-                for (int i = 0; i < bldata.Length; i += 4)
+                for (int i = 0; i < previousLoader.Length; i += 4)
                 {
-                    if (bldata[i] == data[0] && bldata[i + 1] == data[1] && bldata[i + 2] == data[2] && bldata[i + 3] == data[3])
+                    if (previousLoader.Skip(i).Take(4).SequenceEqual(data))
                     {
                         // found the sig post
                         sigcheck = true;
@@ -906,29 +999,22 @@ namespace RGBuild.NAND
                 }
             }
 
-            byte[] headerdata = new byte[0x10];
-            byte[] dgdata = new byte[bldata.Length - bootloader.SecuredDataStart];
-            Array.Copy(bldata, headerdata, 0x10);
-            Array.Copy(bldata, bootloader.SecuredDataStart, dgdata, 0, dgdata.Length);
+
             byte[] hash = RotSumSha.XeCryptRotSumSha(headerdata, 0x10, dgdata, dgdata.Length);
 
             if (sigcheck)
             {
-
                 // verify next loaders signature
                 byte[] sig = (bootloader.GetType() == typeof(Bootloader3BL)
                                   ? ((Bootloader3BL)bootloader).Signature
                                   : ((Bootloader4BL)bootloader).Signature);
 
-                RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
-                rsa.ImportParameters(Misc.GenerateRSAParametersFromPublicKey(RsaPublicKey));
-                RSAPKCS1SignatureDeformatter sigDeformatter = new RSAPKCS1SignatureDeformatter(rsa);
-                sigDeformatter.SetHashAlgorithm("SHA");
-                return sigDeformatter.VerifySignature(hash, sig) ? BootloaderSecurityType.SecureStock : BootloaderSecurityType.Unknown;
+                return VerifySignature(sig, hash, (bootloader.GetType() == typeof(Bootloader3BL) ? Salt3BL : Salt4BL), RsaPublicKey);
             }
             return hash.SequenceEqual(Digest4BL) ? BootloaderSecurityType.SecureStock : (Lists.GlitchableCBs.Contains(Build)) ? BootloaderSecurityType.SecureGlitch : BootloaderSecurityType.Insecure;
         }
     }
+
     public class Bootloader3BL : Bootloader
     {
         public byte[] Signature = new byte[0x100]; // 0x100
@@ -1027,6 +1113,14 @@ namespace RGBuild.NAND
         {
             Read(io);
             HmacShaNonce = io.Reader.ReadBytes(0x10);
+            if(Magic == NANDBootloaderMagic._S3)
+            {
+                byte[] pre1838Nonce = new byte[0x30];
+                Array.Copy(HmacShaNonce, pre1838Nonce, 0x10);
+                Array.Copy(((Bootloader2BL)PreviousLoader).Salt4BL, 0, pre1838Nonce, 0x10, 0x20);
+                HmacShaNonce = pre1838Nonce;
+            }
+
             byte[] payload = io.Reader.ReadBytes((int)Size - 0x20);
             //if(CPUKey != null)
             //{
@@ -1038,7 +1132,7 @@ namespace RGBuild.NAND
                 EncryptedData = payload;
                 DecryptedData = HmacRc4(EncryptedData);
                 if (!((DecryptedData[0x20] == 0 && DecryptedData[0x21] == 0 && DecryptedData[0x22] == 0 &&
-                      DecryptedData[0x23] == 0)||(DecryptedData[0x210] == 0 && DecryptedData[0x211] == 0 && DecryptedData[0x212] == 0 && DecryptedData[0x213] == 0)))
+                      DecryptedData[0x23] == 0)||(DecryptedData[0x210] == 0 && DecryptedData[0x211] == 0 && DecryptedData[0x212] == 0 && DecryptedData[0x213] == 0)) && !Magic.ToString().EndsWith("3") && !Magic.ToString().EndsWith("4"))
                 {
                     UsingCpuKey = true;
                     HmacShaNonce = Rc4Key;
@@ -1050,12 +1144,24 @@ namespace RGBuild.NAND
                 DecryptedData = payload;
 
             X360IO io2 = new X360IO(DecryptedData, true);
-            Signature = io2.Reader.ReadBytes(0x100);
-            RsaPublicKey = io2.Reader.ReadBytes(0x110);
-            Nonce6BL = io2.Reader.ReadBytes(0x10);
-            Salt6BL = io2.Reader.ReadBytes(0xA);
-            Padding = io2.Reader.ReadUInt16();
-            Digest5BL = io2.Reader.ReadBytes(0x14);
+            if(Magic == NANDBootloaderMagic._S3)
+            {
+                Digest5BL = io2.Reader.ReadBytes(0x14);
+            }
+            else if (Magic == NANDBootloaderMagic.S4 && Build <= 1746)
+            {
+                Signature = io2.Reader.ReadBytes(0x100); 
+                Digest5BL = io2.Reader.ReadBytes(0x14);
+            }
+            else
+            {
+                Signature = io2.Reader.ReadBytes(0x100);
+                RsaPublicKey = io2.Reader.ReadBytes(0x110);
+                Nonce6BL = io2.Reader.ReadBytes(0x10);
+                Salt6BL = io2.Reader.ReadBytes(0xA);
+                Padding = io2.Reader.ReadUInt16();
+                Digest5BL = io2.Reader.ReadBytes(0x14);
+            }
             io2.Close();
         }
 
@@ -1092,12 +1198,24 @@ namespace RGBuild.NAND
             Array.Resize(ref HmacShaNonce, 0x10);
             io.Writer.Write(HmacShaNonce);
             X360IO io2 = new X360IO(DecryptedData, true);
-            io2.Writer.Write(Signature);
-            io2.Writer.Write(RsaPublicKey);
-            io2.Writer.Write(Nonce6BL);
-            io2.Writer.Write(Salt6BL);
-            io2.Writer.Write(Padding);
-            io2.Writer.Write(Digest5BL);
+            if (Magic == NANDBootloaderMagic._S3)
+            {
+                io2.Writer.Write(Digest5BL);
+            }
+            else if (Magic == NANDBootloaderMagic.S4 && Build <= 1746)
+            {
+                io2.Writer.Write(Signature);
+                io2.Writer.Write(Digest5BL);
+            }
+            else
+            {
+                io2.Writer.Write(Signature);
+                io2.Writer.Write(RsaPublicKey);
+                io2.Writer.Write(Nonce6BL);
+                io2.Writer.Write(Salt6BL);
+                io2.Writer.Write(Padding);
+                io2.Writer.Write(Digest5BL);
+            }
             DecryptedData = ((MemoryStream)io2.Stream).ToArray();
             io2.Close();
             if (!writeDecrypted)
@@ -1113,46 +1231,52 @@ namespace RGBuild.NAND
             }
             else
                 io.Writer.Write(DecryptedData);
+
         }
 
         public override BootloaderSecurityType VerifyLoader(Bootloader bootloader)
         {
             byte[] bldata = bootloader.GetData();
             int len = bootloader.GetType() == typeof (Bootloader6BL) ? 0x20 : 0x10;
+            int secStart = bootloader.GetType() == typeof(Bootloader6BL) ? 0x330 : bootloader.SecuredDataStart;
             byte[] headerdata = new byte[len];
-            byte[] dgdata = new byte[bldata.Length - bootloader.SecuredDataStart];
+            byte[] dgdata = new byte[bldata.Length - secStart];
             Array.Copy(bldata, headerdata, 0x10);
+            Array.Copy(bldata, secStart, dgdata, 0, dgdata.Length);
 
-            Array.Copy(bldata, bootloader.SecuredDataStart, dgdata, 0, dgdata.Length);
+            if (Magic == NANDBootloaderMagic._S3)
+            {
+                SHA1 sha = new SHA1Managed();
+                sha.TransformBlock(headerdata, 0, 0x10, null, 0);
+                sha.TransformFinalBlock(bldata, 0x20, bldata.Length - 0x20);
+                return Digest5BL.SequenceEqual(sha.Hash) ? BootloaderSecurityType.SecureStock : BootloaderSecurityType.Insecure;
+            }
+
             byte[] hash = RotSumSha.XeCryptRotSumSha(headerdata, len, dgdata, dgdata.Length);
 
             if (bootloader.GetType() == typeof(Bootloader6BL))
             {
                 try
                 {
-                    // verify next loaders signature
-                    byte[] sig = ((Bootloader6BL)bootloader).Signature;
-
-                    RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
-                    rsa.ImportParameters(Misc.GenerateRSAParametersFromPublicKey(RsaPublicKey));
-                    RSAPKCS1SignatureDeformatter sigDeformatter = new RSAPKCS1SignatureDeformatter(rsa);
-                    sigDeformatter.SetHashAlgorithm("SHA");
-                    return sigDeformatter.VerifySignature(hash, sig)
-                               ? BootloaderSecurityType.SecureStock
-                               : BootloaderSecurityType.Unknown;
-                    //: Lists.GlitchableCBs.Contains(Image.GetLastBootloader(this).Build) ? BootloaderSecurityType.SecureGlitch : BootloaderSecurityType.Insecure;
+                    if (Image.Bootloaders[0].Magic == NANDBootloaderMagic._1BL)
+                    {
+                        byte[] sig = ((Bootloader6BL)bootloader).Signature;
+                        return VerifySignature(sig, hash, Salt6BL, ((Bootloader1BL) Image.Bootloaders[0]).RsaPublicKey);
+                    }
+                    return BootloaderSecurityType._1BL_MISSING;
                 }
                 catch
                 {
                     return BootloaderSecurityType.Unknown;
                 }
             }
+
             if (bootloader.GetType() == typeof(Bootloader5BL))
                 return hash.SequenceEqual(Digest5BL)
                            ? BootloaderSecurityType.SecureStock
                            : Lists.GlitchableCBs.Contains(Image.GetLastBootloader(this).Build) ? BootloaderSecurityType.SecureGlitch : BootloaderSecurityType.Insecure;
             
-            return VerifyLoader(bootloader);
+            return base.VerifyLoader(bootloader);
         }
     }
 

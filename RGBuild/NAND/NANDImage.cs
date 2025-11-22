@@ -1,10 +1,12 @@
-﻿using System;
+﻿using RGBuild.IO;
+using RGBuild.Util;
+using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Windows.Forms;
-using RGBuild.IO;
-using RGBuild.Util;
 
 namespace RGBuild.NAND
 {
@@ -22,7 +24,19 @@ namespace RGBuild.NAND
         SD = 0x5344,
         SE = 0x5345,
         SF = 0x5346,
-        SG = 0x5347
+        SG = 0x5347,
+        _S1 = 0x0231,
+        _S2 = 0x0332,
+        _S3 = 0x0333,
+        _S4 = 0x0334,
+        S2 = 0x5332,
+        S3 = 0x5333,
+        S4 = 0x5334,
+        S5 = 0x5335,
+        C2 = 0x4332,
+        C3 = 0x4333,
+        C4 = 0x4334,
+        C5 = 0x4335
     }
     public class MobileXFile
     {
@@ -136,6 +150,9 @@ namespace RGBuild.NAND
         {
             if (((NANDImageStream)IO.Stream).ConfigBlockStart <= 0)
                 return;
+            if(((NANDImageStream)IO.Stream).SpareDataType == SpareDataType.None) {
+                ((NANDImageStream)IO.Stream).SeekToBlock(((NANDImageStream)IO.Stream).ConfigBlockStart);
+            }
             ((NANDImageStream)IO.Stream).SeekToBlock(((NANDImageStream)IO.Stream).ConfigBlockStart);
             ConfigBlock = IO.Reader.ReadBytes((int)(((NANDImageStream) IO.Stream).BlockLength*4));
         }
@@ -192,14 +209,11 @@ namespace RGBuild.NAND
             LoadSMC();
             if(Header.ContainsRGBP)
                 LoadPayloadList();
-            if (((NANDImageStream)IO.Stream).SpareDataType != SpareDataType.None)
-            {
-                Console.WriteLine("Loading filesystems...");
-                LoadFileSystem();
-                //LoadSecuredFiles();
-                Console.WriteLine("Loading config blocks...");
-                LoadConfigBlocks();
-            }
+            Console.WriteLine("Loading filesystems...");
+            LoadFileSystem();
+            //LoadSecuredFiles();
+            Console.WriteLine("Loading config blocks...");
+            LoadConfigBlocks();
             //bool bewl = Bootloaders[1].VerifyLoader(Bootloaders[2]);
             //byte[] sig = KeyVault.Signature;
             //byte[] sig2 = KeyVault.GenerateSignature();
@@ -305,24 +319,65 @@ namespace RGBuild.NAND
         public void LoadFileSystem()
         {
             FileSystems = new List<FileSystemRoot>();
-            int blocks = ((NANDImageStream) IO.Stream).BlockCount;
-            for (int i = 0; i < blocks; i++)
-            {
-                ISpareData ecc = ((NANDImageStream) IO.Stream).GetBlockSpare(i);
-                if (ecc.FsSequence != 0 && (CheckFlag(ecc.FsBlockType, (byte)FileSystemExEntries.FsRootEntry) || CheckFlag(ecc.FsBlockType, (byte)FileSystemExEntries.FsRootEntryAlt)))
-                //if ((ecc.BlockId > 0 || CheckFlag(ecc.FsBlockType, (byte)FileSystemExEntries.FsRootEntry)))
-                {
-                    Console.WriteLine("* Found filesystem @ 0x" + (i * ((NANDImageStream)IO.Stream).BlockLength).ToString("X"));
-                    FileSystemRoot root = new FileSystemRoot(this, i, ecc.FsSequence);
+            NANDImageStream stream = ((NANDImageStream)IO.Stream);
+            int blocks = stream.BlockCount;
+            bool bigblock = ((NANDImageStream)IO.Stream).IsBigBlock;
+
+            if (((NANDImageStream)IO.Stream).SpareDataType == SpareDataType.None) {
+                byte[] anchor1Hash = new byte[0x14];
+                byte[] anchor1Data = new byte[0x1EC];
+                byte[] anchor2Hash = new byte[0x14];
+                byte[] anchor2Data = new byte[0x1EC];
+
+                long pos = stream.Position;
+                stream.Seek(0x2FE8000, SeekOrigin.Begin);
+                stream.Read(anchor1Hash, 0, 0x14);
+                stream.Read(anchor1Data, 0, 0x1EC);
+
+                stream.Seek(0x2FEC000, SeekOrigin.Begin);
+                stream.Read(anchor2Hash, 0, 0x14);
+                stream.Read(anchor2Data, 0, 0x1EC);
+
+                SHA1 sha1 = SHA1.Create();
+                byte[] hash1 = sha1.ComputeHash(anchor1Data);
+                byte[] hash2 = sha1.ComputeHash(anchor2Data);
+
+                int version = 0;
+
+                if (StructuralComparisons.StructuralEqualityComparer.Equals(hash1, anchor1Hash)) {
+                    version = anchor1Data[7];
+                    int block = ((anchor2Data[8] << 8) + anchor2Data[9]);
+                    Console.WriteLine("* Found filesystem @ 0x" + (block * stream.BlockLength).ToString("X"));
+                    FileSystemRoot root = new FileSystemRoot(this, block, version);
                     root.Read();
                     FileSystems.Add(root);
-                    if(root.Entries.FindAll(sec => sec.FileName == "mfgbootlauncher.xex").Count > 0)
+                }
+                if (StructuralComparisons.StructuralEqualityComparer.Equals(hash2, anchor2Hash)) {
+                    if (version < anchor2Data[7]) {
+                        version = anchor2Data[7];
+                        int block = ((anchor2Data[8] << 8) + anchor2Data[9]);
+                        Console.WriteLine("* Found filesystem @ 0x" + (block * stream.BlockLength).ToString("X"));
+                        FileSystemRoot root = new FileSystemRoot(this, block, version);
+                        root.Read();
+                        FileSystems.Add(root);
+                    }
+                }
+            } else {
+                for (int i = 0; i < blocks; i++) {
+                    ISpareData ecc = bigblock ? ((NANDImageStream)IO.Stream).GetBigBlockSpare(i) : ((NANDImageStream)IO.Stream).GetBlockSpare(i);
+                    if (ecc.FsSequence != 0 && (CheckFlag(ecc.FsBlockType, (byte)FileSystemExEntries.FsRootEntry) || CheckFlag(ecc.FsBlockType, (byte)FileSystemExEntries.FsRootEntryAlt)))
                     {
-                        root = root;
+                        Console.WriteLine("* Found filesystem @ 0x" + (i * ((NANDImageStream)IO.Stream).BlockLength).ToString("X"));
+                        FileSystemRoot root = new FileSystemRoot(this, i, ecc.FsSequence);
+                        root.Read();
+                        FileSystems.Add(root);
+                        if (root.Entries.FindAll(sec => sec.FileName == "mfgbootlauncher.xex").Count > 0) {
+                            root = root;
+                        }
                     }
                 }
             }
-            FileSystems.Sort((p1, p2) => p1.Version.CompareTo(p2.Version) | p1.BlockNumber.CompareTo(p2.BlockNumber));
+            FileSystems.Sort((p1, p2) => p1.Version.CompareTo(p2.Version));
             foreach (FileSystemRoot fs in FileSystems)
             
                 CurrentFileSystem.BlockMap[fs.BlockNumber] = 0x1ffb;
@@ -336,45 +391,47 @@ namespace RGBuild.NAND
 
             // lets look for mobile files now... hacky way
             List<Tuple<int, FileSystemExEntries, ISpareData>> foundMobiles = new List<Tuple<int, FileSystemExEntries, ISpareData>>();
-            for (int i = 0; i < ((NANDImageStream)IO.Stream).PageCount; i++)
-            {
-                ISpareData edcdata = ((NANDImageStream)IO.Stream).GetPageSpare(i);
+            if (((NANDImageStream)IO.Stream).SpareDataType == SpareDataType.None) {
 
-                byte fspagecount = edcdata.FsPageCount;
-                byte pageflags = (byte)((edcdata.FsBlockType << 2) >> 2); // clear the two edc bits
-                if (fspagecount == 0)
-                    continue;
+            } else {
+                for (int i = 0; i < ((NANDImageStream)IO.Stream).PageCount; i++) {
+                    ISpareData edcdata = ((NANDImageStream)IO.Stream).GetPageSpare(i);
 
-                if ((pageflags & (byte)FileSystemExEntries.FsRootEntry) == (byte)FileSystemExEntries.FsRootEntry)
-                {
-                    if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileB))
-                        foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileB, edcdata));
-
-                    else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileC))
-                        foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileC, edcdata));
-
-                    else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileD))
-                        foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileD, edcdata));
-
-                    else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileE))
-                        foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileE, edcdata));
-
-                    else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileF))
-                        foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileF, edcdata));
-
-                    else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileG))
-                        foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileG, edcdata));
-
-                    else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileH))
-                        foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileH, edcdata));
-
-                    else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileI))
-                        foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileI, edcdata));
-
-                    else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileJ))
-                        foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileJ, edcdata));
-                    else
+                    byte fspagecount = edcdata.FsPageCount;
+                    byte pageflags = (byte)((edcdata.FsBlockType << 2) >> 2); // clear the two edc bits
+                    if (fspagecount == 0)
                         continue;
+
+                    if ((pageflags & (byte)FileSystemExEntries.FsRootEntry) == (byte)FileSystemExEntries.FsRootEntry) {
+                        if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileB))
+                            foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileB, edcdata));
+
+                        else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileC))
+                            foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileC, edcdata));
+
+                        else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileD))
+                            foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileD, edcdata));
+
+                        else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileE))
+                            foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileE, edcdata));
+
+                        else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileF))
+                            foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileF, edcdata));
+
+                        else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileG))
+                            foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileG, edcdata));
+
+                        else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileH))
+                            foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileH, edcdata));
+
+                        else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileI))
+                            foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileI, edcdata));
+
+                        else if (CheckFlag(pageflags, (byte)FileSystemExEntries.MobileJ))
+                            foundMobiles.Add(new Tuple<int, FileSystemExEntries, ISpareData>(i, FileSystemExEntries.MobileJ, edcdata));
+                        else
+                            continue;
+                    }
                 }
             }
             MobileData = new List<MobileXFile>();
@@ -464,7 +521,7 @@ namespace RGBuild.NAND
                     ((NANDImageStream)IO.Stream).SeekToPage(xfile.StartPage);
                     xfile.Read();
                     if (CurrentFileSystem != null)
-                        CurrentFileSystem.BlockMap[xfile.StartPage / ((NANDImageStream)IO.Stream).PagesPerBlock] = 0x1ffb;
+                        CurrentFileSystem.BlockMap[xfile.StartPage / (((NANDImageStream)IO.Stream).IsBigBlock ? ((NANDImageStream)IO.Stream).PagesPerBigBlock : ((NANDImageStream)IO.Stream).PagesPerBlock)] = 0x1ffb;
                 }
             }
             foreach (MobileXFile xfile in MobileData)
@@ -485,6 +542,7 @@ namespace RGBuild.NAND
                     if (xex2[0] == 0x58 && xex2[1] == 0x45 && xex2[2] == 0x58 && (xex2[3] == 0x32 || xex2[3] == 0x31))
                     {
                         CurrentFileSystem.BlockOffset = 0xae0;
+                        Console.WriteLine("* Filesystem @ 0x" + (ent.BlockNumber * ((NANDImageStream)IO.Stream).BlockLength).ToString("X") + " => Offset 0xAE0");
                         break;
                     }
                 }
@@ -496,6 +554,7 @@ namespace RGBuild.NAND
                     if (xex2[0] == 0x58 && xex2[1] == 0x45 && xex2[2] == 0x58 && (xex2[3] == 0x32 || xex2[3] == 0x31))
                     {
                         CurrentFileSystem.BlockOffset = 0x2e0;
+                        Console.WriteLine("* Filesystem @ 0x" + (ent.BlockNumber * ((NANDImageStream)IO.Stream).BlockLength).ToString("X") + " => Offset 0x2E0");
                         break;
                     }
                 }
@@ -504,7 +563,6 @@ namespace RGBuild.NAND
                 xex2 = IO.Reader.ReadBytes(4);
                 if (xex2[0] == 0x58 && xex2[1] == 0x45 && xex2[2] == 0x58 && (xex2[3] == 0x32 || xex2[3] == 0x31))
                     CurrentFileSystem.BlockOffset = 0;
-                
                 break;
             }
 
@@ -512,7 +570,7 @@ namespace RGBuild.NAND
             {
                 ent.SetData(CurrentFileSystem.GetEntryData(ent));
                 CurrentFileSystem.FreeBlockChain(ent.BlockNumber);
-                ent.BlockNumber = 0;
+                //ent.BlockNumber = 0;
             }
         }
 
@@ -522,6 +580,11 @@ namespace RGBuild.NAND
                 Header.KeyVaultAddress = 0x4000;
             if (Header.KeyVaultSize == 0)
                 Header.KeyVaultSize = 0x4000;
+
+            if(Header.KeyVaultAddress >= IO.Stream.Length) {
+                Console.WriteLine("Keyvault address is invalid! (0x" + Header.KeyVaultAddress.ToString("X") + ")");
+                return;
+            }
 
             IO.Stream.Position = Header.KeyVaultAddress;
             KeyVault = new KeyVault(IO, CPUKey);
@@ -580,8 +643,16 @@ namespace RGBuild.NAND
 
             switch (magic)
             {
+                case NANDBootloaderMagic._S1:
+                    Bootloader1BL bl1 = new Bootloader1BL(this);
+                    bl1.SetData(data);
+                    Bootloaders.Add(bl1);
+                    break;
                 case NANDBootloaderMagic.CB:
                 case NANDBootloaderMagic.SB:
+                case NANDBootloaderMagic.S2:
+                case NANDBootloaderMagic.C2:
+                case NANDBootloaderMagic._S2:
                     Bootloader2BL bl2 = stg == 0
                                             ? new Bootloader2BL(this, null)
                                             : new Bootloader2BL(this, Bootloaders[Bootloaders.Count - 1],
@@ -590,18 +661,26 @@ namespace RGBuild.NAND
                     Bootloaders.Add(bl2);
                     break;
                 case NANDBootloaderMagic.SC:
+                case NANDBootloaderMagic.S3:
+                case NANDBootloaderMagic.C3:
+                case NANDBootloaderMagic._S3:
                     Bootloader3BL bl3 = new Bootloader3BL(this, Bootloaders[Bootloaders.Count - 1]);
                     bl3.SetData(data);
                     Bootloaders.Add(bl3);
                     break;
                 case NANDBootloaderMagic.CD:
                 case NANDBootloaderMagic.SD:
+                case NANDBootloaderMagic.S4:
+                case NANDBootloaderMagic.C4:
+                case NANDBootloaderMagic._S4:
                     Bootloader4BL bl4 = new Bootloader4BL(this, Bootloaders[Bootloaders.Count - 1]);
                     bl4.SetData(data);
                     Bootloaders.Add(bl4);
                     break;
                 case NANDBootloaderMagic.CE:
                 case NANDBootloaderMagic.SE:
+                case NANDBootloaderMagic.S5:
+                case NANDBootloaderMagic.C5:
                     Bootloader5BL bl5 = new Bootloader5BL(this, Bootloaders[Bootloaders.Count - 1]);
                     bl5.SetData(data);
                     Bootloaders.Add(bl5);
@@ -744,6 +823,9 @@ namespace RGBuild.NAND
                 {
                     case NANDBootloaderMagic.CB:
                     case NANDBootloaderMagic.SB:
+                    case NANDBootloaderMagic.S2:
+                    case NANDBootloaderMagic.C2:
+                    case NANDBootloaderMagic._S2:
                         Bootloader2BL bl2 = (Bootloader2BL)Bootloaders[i];
                         bl2.HmacShaKey = (i == 0 || (Bootloaders[i - 1].GetType() == typeof(Bootloader1BL))) ? _1BLKey : Bootloaders[i - 1].Rc4Key;
                         bl2.Write();
@@ -766,12 +848,17 @@ namespace RGBuild.NAND
 
                         break;
                     case NANDBootloaderMagic.SC:
+                    case NANDBootloaderMagic.S3:
+                    case NANDBootloaderMagic.C3:
                         Bootloader3BL bl3 = (Bootloader3BL) Bootloaders[i];
                         bl3.HmacShaKey = ((Bootloader2BL) Bootloaders[i - 1]).Nonce3BL;
                         bl3.Write();
                         break;
                     case NANDBootloaderMagic.CD:
                     case NANDBootloaderMagic.SD:
+                    case NANDBootloaderMagic.S4:
+                    case NANDBootloaderMagic.C4:
+                    case NANDBootloaderMagic._S3:
                         Bootloader4BL bl4 = (Bootloader4BL)Bootloaders[i];
                         bl4.UsingCpuKey = false;
                         if(Bootloaders[i - 1].GetType() == typeof(Bootloader2BL))
@@ -785,6 +872,9 @@ namespace RGBuild.NAND
                         break;
                     case NANDBootloaderMagic.CE:
                     case NANDBootloaderMagic.SE:
+                    case NANDBootloaderMagic._S4:
+                    case NANDBootloaderMagic.S5:
+                    case NANDBootloaderMagic.C5:
                         Bootloader5BL bl5 = (Bootloader5BL)Bootloaders[i];
                         bl5.HmacShaKey = Bootloaders[i - 1].Rc4Key;
                         bl5.Write();
@@ -922,24 +1012,35 @@ namespace RGBuild.NAND
                 {
                     case NANDBootloaderMagic.CB:
                     case NANDBootloaderMagic.SB:
+                    case NANDBootloaderMagic.S2:
+                    case NANDBootloaderMagic.C2:
+                    case NANDBootloaderMagic._S2:
                         Bootloader2BL bl2 = (i == 0 || (Bootloaders[i - 1].GetType() == typeof(Bootloader1BL))) ? new Bootloader2BL(this, null) : new Bootloader2BL(this, Bootloaders[i - 1], CPUKey);
                         
                         bl2.Read();
                         Bootloaders.Add(bl2);
                         break;
                     case NANDBootloaderMagic.SC:
+                    case NANDBootloaderMagic.S3:
+                    case NANDBootloaderMagic.C3:
                         Bootloader3BL bl3 = new Bootloader3BL(this, Bootloaders[i - 1]);
                         bl3.Read();
                         Bootloaders.Add(bl3);
                         break;
                     case NANDBootloaderMagic.CD:
                     case NANDBootloaderMagic.SD:
+                    case NANDBootloaderMagic.S4:
+                    case NANDBootloaderMagic.C4:
+                    case NANDBootloaderMagic._S3:
                         Bootloader4BL bl4 = new Bootloader4BL(this, Bootloaders[i - 1]);
                         bl4.Read();
                         Bootloaders.Add(bl4);
                         break;
                     case NANDBootloaderMagic.CE:
                     case NANDBootloaderMagic.SE:
+                    case NANDBootloaderMagic._S4:
+                    case NANDBootloaderMagic.S5:
+                    case NANDBootloaderMagic.C5:
                         Bootloader5BL bl5 = new Bootloader5BL(this, Bootloaders[i - 1]);
                         bl5.Read();
                         Bootloaders.Add(bl5);
@@ -970,7 +1071,7 @@ namespace RGBuild.NAND
             Dictionary<long, NANDBootloaderMagic> bldrs = new Dictionary<long, NANDBootloaderMagic>();
             uint pos = Header.Entrypoint;
             bool secondpatchslot = false;
-            while(true && (pos < IO.Stream.Length))
+            while (true && (pos < IO.Stream.Length))
             {
                 IO.Stream.Position = pos;
                 Bootloader bootloader = new Bootloader(this);

@@ -77,5 +77,10 @@ namespace RGBuild.Util
 
             return new Tuple<byte[], byte[]>(data, rc4Key);
         }
+
+        public static void rc4(byte[] key, ref byte[] data) {
+            RC4Session session = AccountRC4.RC4CreateSession(key);
+            AccountRC4.RC4Encrypt(ref session, data, 0, data.Length);
+        }
     }
 }
