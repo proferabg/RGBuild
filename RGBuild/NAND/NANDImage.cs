@@ -25,7 +25,8 @@ namespace RGBuild.NAND
         SE = 0x5345,
         SF = 0x5346,
         SG = 0x5347,
-        _S1 = 0x0231,
+        _S1 = 0x0331,
+        _S1_INT = 0x0231,
         _S2 = 0x0332,
         _S3 = 0x0333,
         _S4 = 0x0334,
@@ -996,12 +997,13 @@ namespace RGBuild.NAND
             Dictionary<long, NANDBootloaderMagic> bldrs = FindBootloaders();
             Bootloaders.Clear();
             int blmod = 0;
-            if (File.Exists(Path.Combine(Application.StartupPath, "1bl.bin")))
+            string bl1Filename = bldrs.First().Value == NANDBootloaderMagic._S2 ? "DD1_1BL.bin" : "DD2_1BL.bin";
+            if (File.Exists(Path.Combine(Application.StartupPath, bl1Filename)))
             {
-                Bootloader1BL bl = new Bootloader1BL(this);
-                Console.WriteLine("* Found 1BL at RGBuild path");
-                bl.SetData(File.ReadAllBytes(Path.Combine(Application.StartupPath, "1bl.bin")));
-                Bootloaders.Add(bl);
+                Bootloader1BL bl1 = new Bootloader1BL(this);
+                Console.WriteLine("* Found 1BL at RGBuild path (" + bl1Filename + ")");
+                bl1.SetData(File.ReadAllBytes(Path.Combine(Application.StartupPath, bl1Filename)));
+                Bootloaders.Add(bl1);
                 blmod = 1;
             }
             for (int i = Bootloaders.Count; i < bldrs.Count + blmod; i++)

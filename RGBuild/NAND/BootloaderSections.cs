@@ -683,16 +683,17 @@ namespace RGBuild.NAND
         public uint MetaOffset; // usually set to 0x5730
         public byte[] RsaPublicKey; // MO+0
         public ulong POSTOutputAddress; // MO+0x110
-        public ulong UnkAddress1; // MO+0x118
-        public ulong UnkAddress2; // MO+0x120
-        public ulong UnkAddress3; // MO+0x128
+        public ulong POSTInputAddress; // MO+0x118
+        public ulong PCIConfigAddress; // MO+0x120
+        public ulong BusInterfaceAddress; // MO+0x128
         public ulong SbFlashAddress; // MO+0x130
-        public ulong SocMmioAddress; // MO+0x138
-        public ulong UnkAddress4; // MO+0x140
+        public ulong SROMAddress; // MO+0x138
+        public ulong SRAMAddress; // MO+0x140
         public byte[] Nonce2BL; // AKA 1BL Key
         public byte[] Salt2BL;
-        public byte[] DigestPhat = new byte[] { 0xD4, 0x0A, 0x08, 0xB0, 0x25, 0x5D, 0x9A, 0xD7, 0x7A, 0xA0, 0x97, 0x0D, 0x88, 0xA8, 0x6B, 0x99, 0xC4, 0xE3, 0xD9, 0x21 };
-        public byte[] DigestSlim = new byte[] { 0x02, 0x57, 0x50, 0x28, 0x1C, 0x85, 0xE8, 0xAD, 0xC7, 0x35, 0xA4, 0x08, 0x0C, 0x88, 0x14, 0xA2, 0x92, 0xB2, 0x0E, 0xB4 };
+        public byte[] DigestDD1 = new byte[] { 0x6A, 0x98, 0x99, 0x7A, 0xC3, 0xD5, 0x60, 0xE8, 0x6D, 0x05, 0xC8, 0xE5, 0xF7, 0xE9, 0x5B, 0x0B, 0x42, 0x0B, 0x12, 0x10 };
+        public byte[] DigestDD2 = new byte[] { 0xD4, 0x0A, 0x08, 0xB0, 0x25, 0x5D, 0x9A, 0xD7, 0x7A, 0xA0, 0x97, 0x0D, 0x88, 0xA8, 0x6B, 0x99, 0xC4, 0xE3, 0xD9, 0x21 };
+        public byte[] DigestVejle = new byte[] { 0x02, 0x57, 0x50, 0x28, 0x1C, 0x85, 0xE8, 0xAD, 0xC7, 0x35, 0xA4, 0x08, 0x0C, 0x88, 0x14, 0xA2, 0x92, 0xB2, 0x0E, 0xB4 };
 
 
         public Bootloader1BL(NANDImage image) : base(image)
@@ -706,16 +707,16 @@ namespace RGBuild.NAND
             CopyrightSign = io.Reader.ReadByte();
             CopyrightString = io.Reader.ReadAsciiString(0xEB);
             MetaOffset = io.Reader.ReadUInt32();
-            DecryptedData = io.Reader.ReadBytes((int) Size - 0x100);
-            X360IO io2 = new X360IO(DecryptedData, true) {Stream = {Position = MetaOffset - 0x100}};
+            DecryptedData = io.Reader.ReadBytes((int)Size - 0x100);
+            X360IO io2 = new X360IO(DecryptedData, true) { Stream = { Position = MetaOffset - 0x100 } };
             RsaPublicKey = io2.Reader.ReadBytes(0x110);
             POSTOutputAddress = io2.Reader.ReadUInt64();
-            UnkAddress1 = io2.Reader.ReadUInt64();
-            UnkAddress2 = io2.Reader.ReadUInt64();
-            UnkAddress3 = io2.Reader.ReadUInt64();
+            POSTInputAddress = io2.Reader.ReadUInt64();
+            PCIConfigAddress = io2.Reader.ReadUInt64();
+            BusInterfaceAddress = io2.Reader.ReadUInt64();
             SbFlashAddress = io2.Reader.ReadUInt64();
-            SocMmioAddress = io2.Reader.ReadUInt64();
-            UnkAddress4 = io2.Reader.ReadUInt64();
+            SROMAddress = io2.Reader.ReadUInt64();
+            SRAMAddress = io2.Reader.ReadUInt64();
             Nonce2BL = io2.Reader.ReadBytes(0x10);
             Salt2BL = io2.Reader.ReadBytes(0xA);
             io2.Close();
@@ -750,16 +751,25 @@ namespace RGBuild.NAND
             byte[] dgdata = new byte[bldata.Length - bootloader.SecuredDataStart];
             Array.Copy(bldata, headerdata, 0x10);
             Array.Copy(bldata, bootloader.SecuredDataStart, dgdata, 0, dgdata.Length);
-            byte[] hash = RotSumSha.XeCryptRotSumSha(headerdata, 0x10, dgdata, dgdata.Length);
 
-            return VerifySignature(((Bootloader2BL)bootloader).Signature, hash, Salt2BL, RsaPublicKey);
+            byte[] hash;
+
+            if(bootloader.Magic == NANDBootloaderMagic._S2) {
+                SHA1Managed sha1 = new SHA1Managed();
+                sha1.TransformBlock(headerdata, 0, 0x10, null, 0);
+                sha1.TransformFinalBlock(dgdata, 0, dgdata.Length);
+                return VerifySignature(((Bootloader2BL)bootloader).Signature, sha1.Hash, Salt2BL, Main.dd1BlPubKey);
+            } else {
+                hash = RotSumSha.XeCryptRotSumSha(headerdata, 0x10, dgdata, dgdata.Length);
+                return VerifySignature(((Bootloader2BL)bootloader).Signature, hash, Salt2BL, Main.dd2BlPubKey);
+            }
         }
 
         internal BootloaderSecurityType Verify1BL()
         {
             SHA1Managed sha1 = new SHA1Managed();
             byte[] digest = sha1.ComputeHash(GetData());
-            return digest.SequenceEqual(DigestSlim) || digest.SequenceEqual(DigestPhat) ? BootloaderSecurityType.SecureStock : BootloaderSecurityType.Insecure;
+            return digest.SequenceEqual(DigestVejle) || digest.SequenceEqual(DigestDD1) || digest.SequenceEqual(DigestDD2) ? BootloaderSecurityType.SecureStock : BootloaderSecurityType.Insecure;
         }
     }
     public class Bootloader2BL : Bootloader
